@@ -63,4 +63,15 @@ app.listen(process.env.PORT || 3000, () => {
   console.log("TrenchesBot running...");
 });
 
-bot.launch();
+const BASE_URL = process.env.BASE_URL!;
+
+(async () => {
+  // Set Telegram webhook to your deployed URL
+  const webhookUrl = `${BASE_URL}/bot${process.env.TELEGRAM_BOT_TOKEN}`;
+  await bot.telegram.setWebhook(webhookUrl);
+  app.use(bot.webhookCallback(`/bot${process.env.TELEGRAM_BOT_TOKEN}`));
+
+  app.listen(process.env.PORT || 3000, () => {
+    console.log(`🚀 TrenchesBot live at ${webhookUrl}`);
+  });
+})();
