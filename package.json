@@ -13,7 +13,7 @@
     "@solana/web3.js": "^1.78.0",
     "dotenv": "^16.0.3",
     "body-parser": "^1.20.2",
-    "telegraf": "^4.16.3"  // ✅ add this line
+    "telegraf": "^4.16.3"
   },
   "devDependencies": {
     "ts-node-dev": "^2.0.0",
