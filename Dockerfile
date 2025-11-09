@@ -1,18 +1,20 @@
-# Use an official Node image
-FROM node:20
+# Use an official lightweight Node.js 20 image
+FROM node:20-alpine
 
 # Set working directory
 WORKDIR /app
 
-# Copy package files and install dependencies
+# Copy package.json and package-lock.json first
 COPY package*.json ./
-RUN npm install
 
-# Copy all files
+# Install dependencies
+RUN npm install --production
+
+# Copy the rest of the app
 COPY . .
 
-# Expose the port your bot uses
+# Expose port 3000 for the bot server
 EXPOSE 3000
 
-# Start your app
-CMD ["npm", "run", "dev"]
+# Start the bot
+CMD ["npm", "start"]
