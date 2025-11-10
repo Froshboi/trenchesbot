@@ -1,114 +1,139 @@
 import express from "express";
-import dotenv from "dotenv";
-import bodyParser from "body-parser";
 import { Telegraf } from "telegraf";
-import { Connection, PublicKey } from "@solana/web3.js";
+import dotenv from "dotenv";
+import fetch from "node-fetch";
+import { getUser, saveUser } from "./utils/storage.js";
+import { isValidWallet, checkPremiumPayment } from "./utils/solana.js";
 
 dotenv.config();
 
 const app = express();
-app.use(bodyParser.json());
-
-// --- Telegram & Solana ---
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-const port = process.env.PORT || 3000;
-const HELIUS_RPC_URL = process.env.SOLANA_RPC_URL;
-const DEV_WALLET = process.env.DEV_WALLET;
-const DEV_FEE_LAMPORTS = Number(process.env.DEV_FEE_LAMPORTS) || 50000000;
-const connection = new Connection(HELIUS_RPC_URL);
 
-const FREE_WALLET_LIMIT = 1; // free wallets per user
-const users = {}; // chat_id -> { wallets: [{address, paid}] }
+app.use(express.json());
 
-// --- /start command ---
+// --- 🟢 START COMMAND ---
 bot.start(async (ctx) => {
-  const name = ctx.from?.first_name || "friend";
+  await ctx.deleteMessage().catch(() => {});
+  const user = getUser(ctx.chat.id);
+  const name = ctx.from.first_name || "bro";
+
   await ctx.reply(
-    `👋 Hey ${name}!\n` +
-    `I'm *TrenchesBot*, your personal Solana wallet watcher.\n\n` +
-    `💡 Send me a wallet address to start tracking it.\n` +
-    `You'll get instant alerts when transactions happen!`,
+    `👋 Yo ${name}!\n\nI'm *TrenchesBot*, your AI-powered Solana wallet watcher.\n\n💼 You can track wallet activity, check SOL prices, or even copy-trade — all from right here.\n\nSend me a wallet address to start watching (1 wallet free).`,
     { parse_mode: "Markdown" }
   );
 });
 
-// --- Validate Solana address ---
-function isValidWallet(address) {
-  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
-}
+// --- 💸 ADD WALLET ---
+bot.command("addwallet", async (ctx) => {
+  await ctx.deleteMessage().catch(() => {});
+  const user = getUser(ctx.chat.id);
 
-// --- Check if user paid for extra wallets ---
-async function hasPaidExtra(userWallet) {
-  try {
-    const balance = await connection.getBalance(new PublicKey(userWallet));
-    return balance >= DEV_FEE_LAMPORTS;
-  } catch (e) {
-    console.log("Error checking payment:", e);
-    return false;
-  }
-}
-
-// --- Handle wallet messages ---
-bot.on("text", async (ctx) => {
-  const walletAddress = ctx.message.text.trim();
-  const chatId = ctx.chat.id;
-
-  if (!isValidWallet(walletAddress)) {
-    return ctx.reply("⚠️ That’s not a valid Solana wallet address. Try again!");
-  }
-
-  if (!users[chatId]) users[chatId] = { wallets: [] };
-  const user = users[chatId];
-
-  // Free wallet limit check
-  if (user.wallets.length >= FREE_WALLET_LIMIT) {
-    const paid = await hasPaidExtra(walletAddress);
-    if (!paid) {
-      return ctx.reply(
-        `🔒 Free wallet limit reached.\n` +
-        `To track more wallets, send 0.05 SOL to:\n\`${DEV_WALLET}\`\n` +
-        `Once detected, you'll be able to add this wallet.`,
-        { parse_mode: "Markdown" }
-      );
-    }
-  }
-
-  // Add wallet
-  user.wallets.push({ address: walletAddress, paid: user.wallets.length >= FREE_WALLET_LIMIT });
-  try { await ctx.deleteMessage(ctx.message.message_id); } catch (e) {}
-  await ctx.reply(
-    `✅ Now watching wallet:\n\`${walletAddress}\`\nI’ll alert you about transactions.`,
-    { parse_mode: "Markdown" }
-  );
-});
-
-// --- Helius webhook endpoint ---
-app.post("/helius-webhook", async (req, res) => {
-  const events = req.body;
-
-  for (const event of events) {
-    const tx = event.signature;
-    const account = event.account || "Unknown";
-
-    for (const [chatId, userData] of Object.entries(users)) {
-      if (userData.wallets.some(w => w.address === account)) {
-        await bot.telegram.sendMessage(
-          chatId,
-          `💥 Transaction alert for ${account}\n🔗 https://solscan.io/tx/${tx}`
-        );
+  if (!user.premium && user.wallets.length >= 1) {
+    await ctx.reply(
+      `⚠️ Free users can only track *1 wallet.*\n\nUpgrade to premium (0.05 SOL) to unlock unlimited wallets.`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "💰 Upgrade Now", callback_data: "upgrade_premium" }],
+          ],
+        },
+        parse_mode: "Markdown",
       }
-    }
+    );
+    return;
   }
 
-  res.sendStatus(200);
+  await ctx.reply("🔹 Send me the *wallet address* you want to watch:", {
+    parse_mode: "Markdown",
+  });
+  user.awaitingWallet = true;
+  saveUser(ctx.chat.id, user);
 });
 
-// --- Start server and bot ---
-app.listen(port, () => {
-  console.log(`🚀 Server running on port ${port}`);
-  bot.launch();
-  console.log("🤖 TrenchesBot live and listening!");
+// --- 💬 HANDLE WALLET INPUT ---
+bot.on("text", async (ctx) => {
+  const user = getUser(ctx.chat.id);
+  const message = ctx.message.text.trim();
+
+  // Delete message for privacy
+  setTimeout(() => ctx.deleteMessage(ctx.message.message_id).catch(() => {}), 2000);
+
+  if (user.awaitingWallet) {
+    if (!(await isValidWallet(message))) {
+      await ctx.reply("❌ That doesn't look like a valid Solana wallet, bro. Try again.");
+      return;
+    }
+
+    user.wallets.push({ address: message, name: `Wallet #${user.wallets.length + 1}` });
+    delete user.awaitingWallet;
+    saveUser(ctx.chat.id, user);
+
+    await ctx.reply(
+      `✅ Watching wallet:\n\`${message}\`\n\nI'll notify you when something big goes down.`,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
 });
 
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
+// --- 📜 VIEW WALLETS ---
+bot.command("mywallets", async (ctx) => {
+  await ctx.deleteMessage().catch(() => {});
+  const user = getUser(ctx.chat.id);
+
+  if (!user.wallets.length) {
+    await ctx.reply("👀 You aren’t watching any wallets yet. Use /addwallet to get started.");
+    return;
+  }
+
+  const list = user.wallets.map((w, i) => `${i + 1}. \`${w.address}\``).join("\n");
+  await ctx.reply(`📊 *Your tracked wallets:*\n\n${list}`, { parse_mode: "Markdown" });
+});
+
+// --- 💰 CHECK SOL PRICE ---
+bot.command("price", async (ctx) => {
+  await ctx.deleteMessage().catch(() => {});
+  const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd");
+  const data = await res.json();
+  const price = data.solana.usd;
+
+  let advice = "🟢 Time to load up, soldier.";
+  if (price > 200) advice = "🚀 We moonin’, bro. Strap in.";
+  else if (price < 80) advice = "🧠 Smart money’s buying this dip.";
+
+  await ctx.reply(`💰 *SOL Price:* $${price}\n\n${advice}`, { parse_mode: "Markdown" });
+});
+
+// --- 💎 PREMIUM UPGRADE ---
+bot.action("upgrade_premium", async (ctx) => {
+  await ctx.deleteMessage().catch(() => {});
+  const fee = parseFloat(process.env.PREMIUM_FEE_SOL || 0.05);
+
+  await ctx.reply(
+    `💎 To unlock unlimited wallets, send *${fee} SOL* to this address:\n\n\`${process.env.DEV_WALLET}\`\n\nOnce done, tap /premium to verify your payment.`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+// --- 🔍 VERIFY PREMIUM PAYMENT ---
+bot.command("premium", async (ctx) => {
+  await ctx.deleteMessage().catch(() => {});
+  const user = getUser(ctx.chat.id);
+
+  await ctx.reply("⏳ Checking for your payment on-chain... hang tight.");
+
+  const paid = await checkPremiumPayment(ctx.from.id.toString());
+  if (paid) {
+    user.premium = true;
+    saveUser(ctx.chat.id, user);
+    await ctx.reply("✅ Payment confirmed, bro! You’re now premium — unlimited wallets unlocked.");
+  } else {
+    await ctx.reply("❌ No payment found yet. Try again in a few minutes or double-check the address.");
+  }
+});
+
+// --- 🌐 EXPRESS SERVER + BOT LAUNCH ---
+app.get("/", (req, res) => res.send("TrenchesBot is online."));
+app.listen(process.env.PORT || 3000, () => console.log("Server running..."));
+bot.launch().then(() => console.log("🚀 TrenchesBot online!"));
