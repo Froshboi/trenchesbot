@@ -1,139 +1,170 @@
 import express from "express";
-import { Telegraf } from "telegraf";
+import { Telegraf, Markup } from "telegraf";
 import dotenv from "dotenv";
+import bodyParser from "body-parser";
 import fetch from "node-fetch";
-import { getUser, saveUser } from "./utils/storage.js";
-import { isValidWallet, checkPremiumPayment } from "./utils/solana.js";
+import { addWallet, removeWallet, getWallets, walletExists } from "./storage.js";
+import { checkWalletActivity } from "./solana.js";
 
 dotenv.config();
 
 const app = express();
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+app.use(bodyParser.json());
 
-app.use(express.json());
+const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// --- 🟢 START COMMAND ---
+// ---------- START COMMAND ----------
 bot.start(async (ctx) => {
-  await ctx.deleteMessage().catch(() => {});
-  const user = getUser(ctx.chat.id);
-  const name = ctx.from.first_name || "bro";
-
   await ctx.reply(
-    `👋 Yo ${name}!\n\nI'm *TrenchesBot*, your AI-powered Solana wallet watcher.\n\n💼 You can track wallet activity, check SOL prices, or even copy-trade — all from right here.\n\nSend me a wallet address to start watching (1 wallet free).`,
+    "👋 Yo fam! I’m *TrenchesBot* — your Solana wallet watcher and alpha sidekick.\n\nLet’s get started 🔥",
     { parse_mode: "Markdown" }
   );
+
+  await ctx.reply("Press the button below to begin 👇", Markup.keyboard([["🚀 Start Tracking"]]).resize());
 });
 
-// --- 💸 ADD WALLET ---
-bot.command("addwallet", async (ctx) => {
-  await ctx.deleteMessage().catch(() => {});
-  const user = getUser(ctx.chat.id);
-
-  if (!user.premium && user.wallets.length >= 1) {
-    await ctx.reply(
-      `⚠️ Free users can only track *1 wallet.*\n\nUpgrade to premium (0.05 SOL) to unlock unlimited wallets.`,
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "💰 Upgrade Now", callback_data: "upgrade_premium" }],
-          ],
-        },
-        parse_mode: "Markdown",
-      }
-    );
-    return;
+// ---------- MENU SYSTEM ----------
+bot.hears("🚀 Start Tracking", async (ctx) => {
+  const wallets = getWallets(ctx.from.id);
+  if (wallets.length === 0) {
+    await ctx.reply("💼 You don’t have any wallets added yet.\nSend your first wallet address to start tracking 👇");
+  } else {
+    await sendMainMenu(ctx);
   }
-
-  await ctx.reply("🔹 Send me the *wallet address* you want to watch:", {
-    parse_mode: "Markdown",
-  });
-  user.awaitingWallet = true;
-  saveUser(ctx.chat.id, user);
 });
 
-// --- 💬 HANDLE WALLET INPUT ---
+bot.command("menu", async (ctx) => sendMainMenu(ctx));
+
+async function sendMainMenu(ctx) {
+  await ctx.reply(
+    "🏦 Main Menu — What’s the move?",
+    Markup.keyboard([
+      ["➕ Add Wallet", "👀 View Wallets"],
+      ["💰 Solana Price", "🚫 Remove Wallet"],
+    ])
+      .resize()
+      .oneTime()
+  );
+}
+
+// ---------- ADD WALLET ----------
+bot.hears("➕ Add Wallet", async (ctx) => {
+  const wallets = getWallets(ctx.from.id);
+  if (wallets.length >= 1) {
+    return ctx.reply(
+      "⚠️ Bro, free users can only track *one wallet.*\nUpgrade to premium to track more 💸",
+      Markup.keyboard([["💳 Upgrade to Premium"], ["🏠 Back to Menu"]]).resize()
+    );
+  }
+  ctx.session = { waitingForWallet: true };
+  await ctx.reply("👀 Drop your Solana wallet address below 👇");
+});
+
 bot.on("text", async (ctx) => {
-  const user = getUser(ctx.chat.id);
-  const message = ctx.message.text.trim();
+  const text = ctx.message.text.trim();
 
-  // Delete message for privacy
-  setTimeout(() => ctx.deleteMessage(ctx.message.message_id).catch(() => {}), 2000);
+  // only process wallet entry if session active
+  if (ctx.session?.waitingForWallet) {
+    const wallet = text;
+    const userId = ctx.from.id;
 
-  if (user.awaitingWallet) {
-    if (!(await isValidWallet(message))) {
-      await ctx.reply("❌ That doesn't look like a valid Solana wallet, bro. Try again.");
-      return;
+    if (!/^([1-9A-HJ-NP-Za-km-z]{32,44})$/.test(wallet)) {
+      return ctx.reply("❌ Invalid wallet address. Try again.");
     }
 
-    user.wallets.push({ address: message, name: `Wallet #${user.wallets.length + 1}` });
-    delete user.awaitingWallet;
-    saveUser(ctx.chat.id, user);
+    if (walletExists(userId, wallet)) {
+      return ctx.reply("⚠️ You’re already tracking this wallet.");
+    }
 
-    await ctx.reply(
-      `✅ Watching wallet:\n\`${message}\`\n\nI'll notify you when something big goes down.`,
-      { parse_mode: "Markdown" }
-    );
-    return;
+    addWallet(userId, wallet);
+    ctx.session.waitingForWallet = false;
+
+    return ctx.reply(`✅ Wallet added:\n\`${wallet}\`\n\nI’ll ping you when it moves 💸`, {
+      parse_mode: "Markdown",
+      ...Markup.keyboard([["🏠 Back to Menu"]]).resize(),
+    });
+  }
+
+  // handle general wallet input from start
+  if (/^([1-9A-HJ-NP-Za-km-z]{32,44})$/.test(text)) {
+    const userId = ctx.from.id;
+    if (walletExists(userId, text)) {
+      return ctx.reply("⚠️ You’re already watching this wallet!");
+    }
+    addWallet(userId, text);
+    return ctx.reply(`✅ Watching wallet:\n\`${text}\`\nI’ll keep you updated fam 👀`, {
+      parse_mode: "Markdown",
+    });
   }
 });
 
-// --- 📜 VIEW WALLETS ---
-bot.command("mywallets", async (ctx) => {
-  await ctx.deleteMessage().catch(() => {});
-  const user = getUser(ctx.chat.id);
-
-  if (!user.wallets.length) {
-    await ctx.reply("👀 You aren’t watching any wallets yet. Use /addwallet to get started.");
-    return;
+// ---------- VIEW WALLETS ----------
+bot.hears("👀 View Wallets", async (ctx) => {
+  const wallets = getWallets(ctx.from.id);
+  if (wallets.length === 0) {
+    return ctx.reply("💼 You haven’t added any wallets yet.");
   }
-
-  const list = user.wallets.map((w, i) => `${i + 1}. \`${w.address}\``).join("\n");
-  await ctx.reply(`📊 *Your tracked wallets:*\n\n${list}`, { parse_mode: "Markdown" });
+  await ctx.reply(`📜 Your wallets:\n${wallets.map((w) => `• \`${w}\``).join("\n")}`, {
+    parse_mode: "Markdown",
+  });
 });
 
-// --- 💰 CHECK SOL PRICE ---
-bot.command("price", async (ctx) => {
-  await ctx.deleteMessage().catch(() => {});
-  const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd");
-  const data = await res.json();
-  const price = data.solana.usd;
-
-  let advice = "🟢 Time to load up, soldier.";
-  if (price > 200) advice = "🚀 We moonin’, bro. Strap in.";
-  else if (price < 80) advice = "🧠 Smart money’s buying this dip.";
-
-  await ctx.reply(`💰 *SOL Price:* $${price}\n\n${advice}`, { parse_mode: "Markdown" });
-});
-
-// --- 💎 PREMIUM UPGRADE ---
-bot.action("upgrade_premium", async (ctx) => {
-  await ctx.deleteMessage().catch(() => {});
-  const fee = parseFloat(process.env.PREMIUM_FEE_SOL || 0.05);
+// ---------- REMOVE WALLET ----------
+bot.hears("🚫 Remove Wallet", async (ctx) => {
+  const wallets = getWallets(ctx.from.id);
+  if (wallets.length === 0) {
+    return ctx.reply("🤷‍♂️ You’ve got no wallets to remove.");
+  }
 
   await ctx.reply(
-    `💎 To unlock unlimited wallets, send *${fee} SOL* to this address:\n\n\`${process.env.DEV_WALLET}\`\n\nOnce done, tap /premium to verify your payment.`,
-    { parse_mode: "Markdown" }
+    "Which wallet do you wanna remove?",
+    Markup.keyboard([...wallets.map((w) => [w]), ["🏠 Back to Menu"]]).resize()
   );
 });
 
-// --- 🔍 VERIFY PREMIUM PAYMENT ---
-bot.command("premium", async (ctx) => {
-  await ctx.deleteMessage().catch(() => {});
-  const user = getUser(ctx.chat.id);
-
-  await ctx.reply("⏳ Checking for your payment on-chain... hang tight.");
-
-  const paid = await checkPremiumPayment(ctx.from.id.toString());
-  if (paid) {
-    user.premium = true;
-    saveUser(ctx.chat.id, user);
-    await ctx.reply("✅ Payment confirmed, bro! You’re now premium — unlimited wallets unlocked.");
-  } else {
-    await ctx.reply("❌ No payment found yet. Try again in a few minutes or double-check the address.");
+bot.hears(/^([1-9A-HJ-NP-Za-km-z]{32,44})$/, async (ctx) => {
+  const wallet = ctx.message.text.trim();
+  const userId = ctx.from.id;
+  if (walletExists(userId, wallet)) {
+    removeWallet(userId, wallet);
+    return ctx.reply(`🗑️ Removed wallet:\n\`${wallet}\``, { parse_mode: "Markdown" });
   }
 });
 
-// --- 🌐 EXPRESS SERVER + BOT LAUNCH ---
-app.get("/", (req, res) => res.send("TrenchesBot is online."));
-app.listen(process.env.PORT || 3000, () => console.log("Server running..."));
-bot.launch().then(() => console.log("🚀 TrenchesBot online!"));
+// ---------- SOLANA PRICE ----------
+bot.hears("💰 Solana Price", async (ctx) => {
+  try {
+    const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd");
+    const data = await res.json();
+    const price = data.solana.usd;
+    const sentiment = price > 180 ? "🚀 Bro, SOL flying — maybe take profits 💸" : price < 130 ? "📉 Cheap entry — stack some bags!" : "🧘 Hold steady, king. Patience pays.";
+    await ctx.reply(`💰 *SOL Price:* $${price}\n\n${sentiment}`, { parse_mode: "Markdown" });
+  } catch (err) {
+    await ctx.reply("❌ Couldn’t fetch SOL price. Market’s acting weird 🥴");
+  }
+});
+
+// ---------- UPGRADE PROMPT ----------
+bot.hears("💳 Upgrade to Premium", async (ctx) => {
+  await ctx.reply("💎 Premium gets you:\n- Multiple wallets\n- Copy trading access\n- Real-time alerts\n\n💸 Send payment to: `soon.sol`\nThen DM your TX ID to unlock.", { parse_mode: "Markdown" });
+});
+
+// ---------- BACK TO MENU ----------
+bot.hears("🏠 Back to Menu", async (ctx) => sendMainMenu(ctx));
+
+// ---------- WEBHOOK ----------
+app.post(`/bot${process.env.BOT_TOKEN}`, (req, res) => {
+  bot.handleUpdate(req.body);
+  res.status(200).send("OK");
+});
+
+// ---------- HEALTH CHECK ----------
+app.get("/", (req, res) => res.send("TrenchesBot is running!"));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, async () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  const webhookUrl = `${process.env.BASE_URL}/bot${process.env.BOT_TOKEN}`;
+  await bot.telegram.setWebhook(webhookUrl);
+  console.log(`✅ Webhook set to: ${webhookUrl}`);
+});
