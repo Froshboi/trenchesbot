@@ -1,52 +1,50 @@
 import fs from "fs";
 
-const FILE_PATH = "./data.json";
+const STORAGE_FILE = "./wallets.json";
 
-// Load data at startup
-let data = {};
-if (fs.existsSync(FILE_PATH)) {
+// 🗂️ Load wallets from file or start empty
+function loadStorage() {
   try {
-    data = JSON.parse(fs.readFileSync(FILE_PATH, "utf-8"));
+    if (!fs.existsSync(STORAGE_FILE)) return {};
+    const data = fs.readFileSync(STORAGE_FILE, "utf8");
+    return JSON.parse(data);
   } catch (err) {
-    console.error("Failed to parse data.json, starting fresh:", err);
-    data = {};
+    console.error("❌ Error loading storage:", err);
+    return {};
   }
 }
 
-/**
- * Save current memory data to file
- */
-function save() {
-  try {
-    fs.writeFileSync(FILE_PATH, JSON.stringify(data, null, 2));
-  } catch (err) {
-    console.error("Error saving data.json:", err);
+// 💾 Save wallets back to file
+function saveStorage(storage) {
+  fs.writeFileSync(STORAGE_FILE, JSON.stringify(storage, null, 2));
+}
+
+// ➕ Add wallet for a user
+export function addWallet(userId, wallet) {
+  const storage = loadStorage();
+  if (!storage[userId]) storage[userId] = [];
+  if (!storage[userId].includes(wallet)) {
+    storage[userId].push(wallet);
+    saveStorage(storage);
   }
 }
 
-/**
- * Get or initialize user data by chatId
- */
-export function getUser(chatId) {
-  if (!data[chatId]) {
-    data[chatId] = { wallets: [], premium: false };
-    save();
-  }
-  return data[chatId];
+// ❌ Remove wallet for a user
+export function removeWallet(userId, wallet) {
+  const storage = loadStorage();
+  if (!storage[userId]) return;
+  storage[userId] = storage[userId].filter((w) => w !== wallet);
+  saveStorage(storage);
 }
 
-/**
- * Save user data
- */
-export function saveUser(chatId, userData) {
-  data[chatId] = userData;
-  save();
+// 👀 Get all wallets for a user
+export function getWallets(userId) {
+  const storage = loadStorage();
+  return storage[userId] || [];
 }
 
-/**
- * Reset all users (admin/dev use only)
- */
-export function resetAll() {
-  data = {};
-  save();
+// 🔍 Check if wallet already exists for user
+export function walletExists(userId, wallet) {
+  const storage = loadStorage();
+  return storage[userId]?.includes(wallet) || false;
 }
