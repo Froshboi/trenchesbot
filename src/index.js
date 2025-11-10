@@ -5,7 +5,7 @@ import {
   addWallet,
   getWallets,
   walletExists,
-} from "./utils/storage.js"; // ✅ corrected path
+} from "./utils/storage.js"; // make sure this path is correct
 import fetch from "node-fetch";
 
 dotenv.config();
@@ -76,10 +76,32 @@ bot.action("add_wallet", async (ctx) => {
   if (wallets.length >= 1) {
     return ctx.reply(
       `🚧 Adding more than 1 wallet requires premium access.\n\n💸 Send 0.05 SOL to: \`${process.env.DEV_WALLET}\`\nThen confirm your payment to unlock.`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback("💰 Pay & Unlock", "pay_add_wallet")],
+        [Markup.button.callback("❌ Cancel", "cancel_action")]
+      ]),
       { parse_mode: "Markdown" }
     );
   }
   await ctx.reply("💼 Send me the wallet address you want to add.");
+});
+
+// ⚡ Copy trade setup (premium)
+bot.action("copy_trade", async (ctx) => {
+  return ctx.reply(
+    `⚙️ Copy trading is a premium feature.\n\n💸 Send 0.05 SOL to: \`${process.env.DEV_WALLET}\` to unlock.\nI’ll guide you through mirroring trades once active.`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("💰 Pay & Unlock", "pay_copy_trade")],
+      [Markup.button.callback("❌ Cancel", "cancel_action")]
+    ]),
+    { parse_mode: "Markdown" }
+  );
+});
+
+// ❌ Cancel action handler
+bot.action("cancel_action", async (ctx) => {
+  await ctx.reply("⚠️ Action cancelled. You can always return to the menu.");
+  await showMainMenu(ctx);
 });
 
 // 📈 Check SOL price
@@ -98,14 +120,6 @@ bot.action("sol_price", async (ctx) => {
   } catch (err) {
     await ctx.reply("⚠️ Couldn’t fetch SOL price right now.");
   }
-});
-
-// ⚡ Copy trade setup (premium)
-bot.action("copy_trade", async (ctx) => {
-  return ctx.reply(
-    `⚙️ Copy trading is a premium feature.\n\n💸 Send 0.05 SOL to: \`${process.env.DEV_WALLET}\` to unlock.\nI’ll guide you through mirroring trades once active.`,
-    { parse_mode: "Markdown" }
-  );
 });
 
 // 🏠 Express server for Deployra
