@@ -11,6 +11,8 @@ import fetch from "node-fetch";
 dotenv.config();
 
 const app = express();
+app.use(express.json());
+
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 // 👋 /start command
@@ -34,28 +36,31 @@ async function showMainMenu(ctx) {
   );
 }
 
-// 🪙 Handle any text message (wallet input)
+// 🪙 Handle wallet input from user
 bot.on("text", async (ctx) => {
   const wallet = ctx.message.text.trim();
   const userId = ctx.from.id;
 
-  // ✅ Simple Solana address validation
+  // Ignore commands like /start
+  if (wallet.startsWith("/")) return;
+
+  // Validate wallet address
   if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet)) {
     return ctx.reply("❌ That doesn’t look like a valid Solana wallet address.");
   }
 
   if (walletExists(userId, wallet)) {
-    return ctx.reply("⚠️ You’re already watching this wallet, bro!");
+    return ctx.reply("⚠️ You’re already watching this wallet!");
   }
 
   addWallet(userId, wallet);
-  await ctx.deleteMessage(ctx.message.message_id); // delete the wallet message
+  await ctx.deleteMessage(ctx.message.message_id); // remove user input
   await ctx.reply(`✅ Watching wallet:\n\`${wallet}\`\nI’ll notify you about major transactions.`, { parse_mode: "Markdown" });
 
   await showMainMenu(ctx);
 });
 
-// 👁️ View user wallets
+// 👁️ View wallets
 bot.action("view_wallets", async (ctx) => {
   const userId = ctx.from.id;
   const wallets = getWallets(userId);
@@ -71,16 +76,14 @@ bot.action("add_wallet", async (ctx) => {
   const wallets = getWallets(userId);
   if (wallets.length >= 1) {
     return ctx.reply(
-      "🚧 Adding more than 1 wallet requires premium access.\n\n💸 Send 0.05 SOL to unlock:\n`" +
-        process.env.DEV_WALLET +
-        "`\n\nOnce confirmed, I’ll grant access.",
+      `🚧 Adding more than 1 wallet requires premium access.\n\n💸 Send 0.05 SOL to: \`${process.env.DEV_WALLET}\`\nThen confirm your payment to unlock.`,
       { parse_mode: "Markdown" }
     );
   }
   await ctx.reply("💼 Send me the wallet address you want to add.");
 });
 
-// 📈 SOL price
+// 📈 Check SOL price
 bot.action("sol_price", async (ctx) => {
   try {
     const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd");
@@ -88,12 +91,12 @@ bot.action("sol_price", async (ctx) => {
     const price = data.solana.usd;
     const advice =
       price < 100
-        ? "🟢 Bro, SOL’s cheap — might be a good time to buy!"
+        ? "🟢 Cheap entry! Might be time to buy."
         : price < 150
-        ? "🟡 Market’s steady, hodl strong."
-        : "🔴 SOL’s pumping! Might be time to take profits!";
+        ? "🟡 Market steady — hodl strong."
+        : "🔴 SOL pumping! Consider taking profits!";
     await ctx.reply(`💰 Current SOL price: *$${price}*\n\n${advice}`, { parse_mode: "Markdown" });
-  } catch (e) {
+  } catch (err) {
     await ctx.reply("⚠️ Couldn’t fetch SOL price right now.");
   }
 });
@@ -101,19 +104,35 @@ bot.action("sol_price", async (ctx) => {
 // ⚡ Copy trade setup (premium)
 bot.action("copy_trade", async (ctx) => {
   return ctx.reply(
-    "⚙️ Copy trading is a premium feature.\n\n💸 Pay 0.05 SOL to `" +
-      process.env.DEV_WALLET +
-      "` to unlock.\n\nOnce active, I’ll help you mirror trades from your watched wallets.",
+    `⚙️ Copy trading is a premium feature.\n\n💸 Send 0.05 SOL to: \`${process.env.DEV_WALLET}\` to unlock.\nI’ll guide you through mirroring trades once active.`,
     { parse_mode: "Markdown" }
   );
 });
 
-// 🚀 Express server (for Deployra)
+// 🏠 Back to menu
+bot.action("back_to_menu", async (ctx) => showMainMenu(ctx));
+
+// ---------- Express server for Deployra ----------
 app.get("/", (req, res) => res.send("TrenchesBot is live!"));
 
-app.listen(process.env.PORT || 3000, () =>
-  console.log("🚀 Server running on port " + (process.env.PORT || 3000))
-);
+// Telegram webhook endpoint
+app.post(`/bot${process.env.TELEGRAM_BOT_TOKEN}`, (req, res) => {
+  bot.handleUpdate(req.body);
+  res.status(200).send("OK");
+});
 
-// 🤖 Launch bot
-bot.launch();
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, async () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+
+  // Set Telegram webhook using BASE_URL
+  if (process.env.BASE_URL) {
+    const webhookUrl = `${process.env.BASE_URL}/bot${process.env.TELEGRAM_BOT_TOKEN}`;
+    await bot.telegram.setWebhook(webhookUrl);
+    console.log(`✅ Webhook set to: ${webhookUrl}`);
+  } else {
+    console.log("⚠️ BASE_URL not set. Bot will use polling instead of webhook.");
+  }
+
+  bot.launch();
+});
