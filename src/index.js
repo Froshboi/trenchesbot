@@ -5,7 +5,7 @@ import {
   addWallet,
   getWallets,
   walletExists,
-} from "./storage.js";
+} from "./utils/storage.js"; // ✅ corrected path
 import fetch from "node-fetch";
 
 dotenv.config();
@@ -23,7 +23,7 @@ bot.start(async (ctx) => {
   );
 });
 
-// 🎯 Main menu (after wallet added or command)
+// 🎯 Main menu
 async function showMainMenu(ctx) {
   return ctx.reply(
     "📍 Choose an option below:",
@@ -41,10 +41,9 @@ bot.on("text", async (ctx) => {
   const wallet = ctx.message.text.trim();
   const userId = ctx.from.id;
 
-  // Ignore commands like /start
-  if (wallet.startsWith("/")) return;
+  if (wallet.startsWith("/")) return; // ignore commands
 
-  // Validate wallet address
+  // Validate Solana wallet address
   if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet)) {
     return ctx.reply("❌ That doesn’t look like a valid Solana wallet address.");
   }
@@ -109,10 +108,7 @@ bot.action("copy_trade", async (ctx) => {
   );
 });
 
-// 🏠 Back to menu
-bot.action("back_to_menu", async (ctx) => showMainMenu(ctx));
-
-// ---------- Express server for Deployra ----------
+// 🏠 Express server for Deployra
 app.get("/", (req, res) => res.send("TrenchesBot is live!"));
 
 // Telegram webhook endpoint
